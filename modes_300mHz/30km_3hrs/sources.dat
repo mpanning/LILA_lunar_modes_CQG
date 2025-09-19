@@ -1,0 +1,6 @@
+#number of events:
+1
+# stacking them (.true.) or not (.false.):
+.false.
+#n name      Mrr,     Mtt,       Mpp,     Mrt,      Mrp,       Mtp,     dep,   lat,   phi    delay(s)
+01 M012601A -3.98e+16 -0.00e+00  3.98e+16  0.00e+00 -0.00e+00  0.00e+00  30.00  00.00 000.00 000.00
