@@ -15,6 +15,8 @@ modes_root = "./modes_300mHz"
 mdl = "weber2010hr"
 DMQ_path = "800km_3hrs"
 SMQ_path = "30km_3hrs"
+DMQ_45d_path = "800km_45deg_3hrs"
+
 
 # Plot variables
 amin = 1.e-19
@@ -91,6 +93,38 @@ stdmq.write(filename)
 stdmqmax = stdmq.copy()
 for tr in stdmqmax:
     tr.data = DMQ_max_scale*tr.data
+
+# Read in the data for off-axis and differentiate to acceleration
+stdmq_off = Stream()
+
+for comp in ['Z', 'N', 'E']:
+    filename = "{}/{}/U{}_{:04d}".format(modes_root, DMQ_45d_path, comp, stn+1)
+    df = pd.read_fwf(filename, header=None, names=['Time', comp])
+    delta = df['Time'].values[1]-df['Time'].values[0]
+    tr = Trace(data=df[comp].values)
+    tr.stats['delta'] = delta
+    tr.stats['channel'] = "MH{}".format(comp)
+    stnname = "DMQ{:02d}".format(stn+1)
+    tr.stats['network'] = network
+    tr.stats['station'] = stnname
+    tr.stats['starttime'] = reftime + df['Time'].values[0]
+    # differentiate twice to acceleration
+    # tr.differentiate()
+    # tr.differentiate()
+    stdmq_off = stdmq_off + tr
+
+#Low pass filter to limit some ringing
+fcorner = 0.95*fmax
+stdmq_off.filter('lowpass', freq=fcorner)
+if iftrim:
+    stime = reftime
+    etime = stime+trimlength
+    stdmq_off.trim(starttime=stime, endtime=etime)
+
+# Write them to mseed files
+filename = "{}/fmax{:04d}_{}_DMQ_off_acc.mseed".format(mseeds_path, int(fmax*1000),
+                                                       stdmq_off[0].stats['station'])
+stdmq_off.write(filename)
 
 # Do the same for SMQ
 stsmq = Stream()
@@ -183,6 +217,23 @@ omega = 2.*math.pi*freq
 omegasq = np.multiply(omega, omega)
 spec = np.multiply(omegasq, spec)
 plt.loglog(freq, scale*np.abs(spec), label="SMQ (largest)")
+
+fs = stdmq_off[0].stats['sampling_rate']
+# (stsmqPxx, stsmqfreqs) = mlab.psd(stsmq[0].data, Fs=fs, NFFT=nfft,
+#                                   noverlap=noverlap, detrend='linear')
+# plt.loglog(stsmqfreqs, np.sqrt(stsmqPxx), label="SMQ mlab")
+stdmq_off[0].detrend('demean')
+npts = stdmq_off[0].stats['npts']
+nfft_scipy = 128*next_fast_len(npts)
+scale = 1./np.sqrt(npts)
+pos_freq = (nfft_scipy + 1 ) // 2
+spec = fft(stdmq_off[0].data, nfft_scipy)[:pos_freq]
+freq = fftfreq(nfft_scipy, 1 / fs)[:pos_freq]
+# Differentiate to acceleration in frequency domain
+omega = 2.*math.pi*freq
+omegasq = np.multiply(omega, omega)
+spec = np.multiply(omegasq, spec)
+plt.loglog(freq, scale*np.abs(spec), label="DMQ (off-axis)", color="tab:blue", linestyle="--")
 
 # add in lines for mode frequencies
 plt.axvline(x=modefreqs[0], color='r', linestyle='--', linewidth=0.5,

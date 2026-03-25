@@ -15,6 +15,7 @@ modes_root = "./modes_300mHz"
 mdl = "weber2010hr"
 DMQ_path = "800km_3hrs"
 SMQ_path = "30km_3hrs"
+DMQ_45d_path = "800km_45deg_3hrs"
 
 DMQ_moment = 1.e13
 DMQ_max_moment = math.pow(10, 13.8)
@@ -23,9 +24,6 @@ SMQ_moment = 3.98e16
 SMQ_scale = 1.e-2 # To account for me mistakenly equating mb to Mw
 
 # LILA strainmeter sensitivities
-# LILAlow = "nomodes-conservative.dat"
-# LILAmedium = "nomodes-baseline.dat"
-# LILAhigh = "nomodes-ambitious.dat"
 LILA_Pioneer = "lilanoise-10km-0.5W-nomodes.dat"
 LILA_Horizon = "lilanoise-69km-0.5W-nomodes.dat"
 lilafactors = [2.0, np.sqrt(3.0)]
@@ -137,6 +135,72 @@ stdmqmax_strain = stdmq_strain.copy()
 for tr in stdmqmax_strain:
     tr.data = DMQ_max_scale*tr.data
 
+# Calculate strain for off-axis DMQ
+stdmq_off1 = Stream()
+stdmq_off2 = Stream()
+stdmq_off_strain = Stream()
+
+for comp in ['Z', 'N', 'E']:
+    filename = "{}/{}/U{}_{:04d}".format(modes_root, DMQ_45d_path, comp, stn1+1)
+    df1 = pd.read_fwf(filename, header=None, names=['Time', comp])
+    filename = "{}/{}/U{}_{:04d}".format(modes_root, DMQ_45d_path, comp, stn2+1)
+    df2 = pd.read_fwf(filename, header=None, names=['Time', comp])
+    delta = df1['Time'].values[1]-df1['Time'].values[0]
+    tr1 = Trace(data=df1[comp].values)
+    tr1.stats['delta'] = delta
+    tr1.stats['channel'] = "MH{}".format(comp)
+    stnname = "DMQ{:02d}".format(stn1+1)
+    tr1.stats['network'] = network
+    tr1.stats['station'] = stnname
+    tr1.stats['starttime'] = reftime + df1['Time'].values[0]
+    stdmq_off1 = stdmq_off1 + tr1
+    tr2 = Trace(data=df2[comp].values)
+    tr2.stats['delta'] = delta
+    tr2.stats['channel'] = "MH{}".format(comp)
+    stnname = "DMQ{:02d}".format(stn2+1)
+    tr2.stats['network'] = network
+    tr2.stats['station'] = stnname
+    tr2.stats['starttime'] = reftime + df2['Time'].values[0]
+    stdmq_off2 = stdmq_off2 + tr2
+
+#Low pass filter to limit some ringing
+fcorner = 0.95*fmax
+stdmq_off1.filter('lowpass', freq=fcorner)
+stdmq_off2.filter('lowpass', freq=fcorner)
+if iftrim:
+    stime = reftime
+    etime = stime+trimlength
+    stdmq_off1.trim(starttime=stime, endtime=etime)
+    stdmq_off2.trim(starttime=stime, endtime=etime)
+
+# stdmq1.plot()
+# stdmq2.plot()
+
+# Write them to mseed files
+filename = "{}/fmax{:04d}_{}_DMQ_off.mseed".format(mseeds_path, int(fmax*1000),
+                                                   stdmq_off1[0].stats['station'])
+stdmq_off1.write(filename)
+filename = "{}/fmax{:04d}_{}_DMQ_off.mseed".format(mseeds_path, int(fmax*1000),
+                                                   stdmq_off2[0].stats['station'])
+stdmq_off2.write(filename)
+
+# Calculate linear strain as the difference in E component
+# (EE component of strain)
+ddist = (distances[stn2] - distances[stn1])*rad*math.pi/180.
+stdata = (stdmq_off2[2].data - stdmq_off1[2].data)/ddist
+tr = Trace(data=stdata)
+tr.stats['delta'] = delta
+tr.stats['channel'] = 'MSE'
+tr.stats['starttime'] = stdmq_off1[2].stats['starttime']
+stnname = "D{:02d}{:02d}".format(stn1+1, stn2+1)
+tr.stats['station'] = stnname
+stdmq_off_strain = stdmq_off_strain + tr
+
+filename = "{}/dmq_off_strain_{:02d}_{:02d}_DMQ.mseed".format(mseeds_path, stn1+1,
+                                                              stn2+1)
+stdmq_off_strain.write(filename)
+
+
 # Calculate strain for SMQ
 stsmq1 = Stream()
 stsmq2 = Stream()
@@ -180,10 +244,10 @@ if iftrim:
 
 # Write them to mseed files
 filename = "{}/fmax{:04d}_{}_SMQ.mseed".format(mseeds_path, int(fmax*1000),
-                                               stdmq1[0].stats['station'])
+                                               stsmq1[0].stats['station'])
 stsmq1.write(filename)
 filename = "{}/fmax{:04d}_{}_SMQ.mseed".format(mseeds_path, int(fmax*1000),
-                                               stdmq2[0].stats['station'])
+                                               stsmq2[0].stats['station'])
 stsmq2.write(filename)
 
 # Calculate linear strain as the difference in E component
@@ -263,11 +327,38 @@ char_strain_scale = np.sqrt(freq)
 plt.loglog(freq, scale*np.multiply(np.abs(spec), char_strain_scale),
            label="SMQ (largest)")
 
+fs = stdmq_off_strain[0].stats['sampling_rate']
+# (stdmqPxx, stdmqfreqs) = mlab.psd(stdmq_strain[0].data, Fs=fs, NFFT=nfft,
+#                                   noverlap=noverlap, detrend='linear')
+# char_strain_scale = np.sqrt(stdmqfreqs)
+# plt.loglog(stdmqfreqs, np.multiply(char_strain_scale, np.sqrt(stdmqPxx)),
+#            label="DMQ mlab")
+stdmq_off_strain[0].detrend('demean')
+npts = stdmq_off_strain[0].stats['npts']
+nfft_scipy = 128*next_fast_len(npts)
+scale = 1./np.sqrt(npts)
+pos_freq = (nfft_scipy + 1 ) // 2
+spec = fft(stdmq_off_strain[0].data, nfft_scipy)[:pos_freq]
+freq = fftfreq(nfft_scipy, 1 / fs)[:pos_freq]
+char_strain_scale = np.sqrt(freq)
+plt.loglog(freq, scale*np.multiply(np.abs(spec), char_strain_scale),
+           label="DMQ (off-axis)", color="tab:blue", linestyle="--")
+
+
 # add in lines for mode frequencies
 plt.axvline(x=modefreqs[0], color='r', linestyle='--', linewidth=0.5,
             label="Modes (<{} mHz)".format(maxf))
 for f in modefreqs[1:]:
     plt.axvline(x=f, color='r', linestyle='--', linewidth=0.5)
+
+# Also add labels for 1S1 and 0S2
+f0S2 = modedf.loc[(modedf['n'] == 0) & (modedf['l'] == 2)]['f'].values[0]*1.e-3
+f1S1 = modedf.loc[(modedf['n'] == 1) & (modedf['l'] == 1)]['f'].values[0]*1.e-3
+plt.text(f0S2, 3*hmin, r"$_0$S$_2$", fontsize=10, color='red', ha='right',
+         va='center')
+plt.text(f1S1, 3*hmin, r"$_1$S$_1$", fontsize=10, color='red', ha='right',
+         va='center')
+
 
 plt.xlim((1.e-5, 0.5))
 
